@@ -1,3 +1,18 @@
+Development Version
+-------------------
+
+New Features
+
+* Add an explicit PostgreSQL script mode for `parse()`, `parsestream()`
+  and `split()` via the new `dialect='postgresql'` argument.  In this
+  mode `COPY ... FROM STDIN` headers together with their raw data lines
+  and the terminating `\.` line are delivered as one statement.  Data
+  lines are not tokenized, so semicolons, quotes, comment-looking text
+  and escaped backslashes inside the data no longer break the split;
+  the original text including line endings is preserved.  The default
+  SQL mode is unchanged.
+
+
 Release 0.6.1 (Nov 01, 2026)
 ----------------------------
 

@@ -36,6 +36,23 @@ The end of a statement is identified by the occurrence of a semicolon.
 Semicolons within certain SQL constructs like ``BEGIN ... END`` blocks
 are handled correctly by the splitting mechanism.
 
+Scripts produced by PostgreSQL's ``pg_dump`` contain
+``COPY ... FROM STDIN`` blocks whose data lines are raw data rather
+than SQL and may themselves contain semicolons, quotes or
+comment-looking text.  Pass ``dialect='postgresql'`` to
+:meth:`~sqlparse.split` or :meth:`~sqlparse.parse` to enable
+PostgreSQL script mode: the COPY header, the raw data section and the
+terminating ``\.`` line are then delivered together as one statement
+without tokenizing the data.  Only a line containing solely ``\.``
+ends a data section; an unterminated data section is split as
+ordinary SQL instead.
+
+.. code-block:: python
+
+  >>> sql = 'COPY t FROM STDIN;\n1\thello; world\n\\.\nSELECT 1;'
+  >>> sqlparse.split(sql, dialect='postgresql')
+  ['COPY t FROM STDIN;\n1\thello; world\n\\.', 'SELECT 1;']
+
 SQL statements can be beautified by using the :meth:`~sqlparse.format` function.
 
 .. code-block:: python
