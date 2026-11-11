@@ -72,10 +72,22 @@ def recurse(*cls):
     """
     def wrap(f):
         def wrapped_f(tlist):
-            for sgroup in tlist.get_sublists():
-                if not isinstance(sgroup, cls):
-                    wrapped_f(sgroup)
-            f(tlist)
+            # Post-order traversal with an explicit stack: every eligible
+            # subtree is fully processed (``state`` flips from 0 to 1) before
+            # its parent's ``f`` runs, matching the original recursive
+            # "children first, then self" order without using the Python
+            # call stack.
+            stack = [(tlist, 0)]
+            while stack:
+                current, state = stack.pop()
+                if state == 0:
+                    stack.append((current, 1))
+                    sublists = [sgroup for sgroup in current.get_sublists()
+                                if not isinstance(sgroup, cls)]
+                    for sgroup in reversed(sublists):
+                        stack.append((sgroup, 0))
+                else:
+                    f(current)
 
         return wrapped_f
 

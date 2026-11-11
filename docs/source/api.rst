@@ -96,8 +96,14 @@ of service (DoS) attacks:
   The parser includes configurable limits to prevent excessive resource
   consumption when processing very large or deeply nested SQL structures:
 
-  - ``MAX_GROUPING_DEPTH`` (default: 100) - Limits recursion depth during token grouping
+  - ``MAX_GROUPING_DEPTH`` (default: 100) - Limits the nesting depth accepted during token grouping
   - ``MAX_GROUPING_TOKENS`` (default: 10,000) - Limits the number of tokens processed in a single grouping operation
+
+  The grouping engine and the token tree traversals (``flatten()``, statement
+  filters, pretty printing) run on explicit stacks rather than Python
+  recursion, so input within these limits no longer depends on
+  ``sys.getrecursionlimit()``. Input beyond them is rejected with
+  ``SQLParseError`` before the grouping work starts.
 
   These limits can be modified by changing the constants in ``sqlparse.engine.grouping``
   if your application requires processing larger SQL statements. Set a limit to ``None``

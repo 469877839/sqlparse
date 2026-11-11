@@ -188,20 +188,30 @@ class TokenList(Token):
 
     def _pprint_tree(self, max_depth=None, depth=0, f=None, _pre=''):
         """Pretty-print the object tree."""
+        # The walk is iterative so that deeply nested trees don't consume
+        # Python's call stack. Each stack entry is one pending node visit:
+        # (token, index_in_parent, is_last_child, prefix, depth).
         token_count = len(self.tokens)
-        for idx, token in enumerate(self.tokens):
+        stack = [(self.tokens[idx], idx, idx == token_count - 1, _pre, depth)
+                 for idx in range(token_count - 1, -1, -1)]
+        while stack:
+            token, index, last, pre, depth = stack.pop()
             cls = token._get_repr_name()
             value = token._get_repr_value()
 
-            last = idx == (token_count - 1)
-            pre = '`- ' if last else '|- '
+            marker = '`- ' if last else '|- '
 
             q = '"' if value.startswith("'") and value.endswith("'") else "'"
-            print(f"{_pre}{pre}{idx} {cls} {q}{value}{q}", file=f)
+            print(f"{pre}{marker}{index} {cls} {q}{value}{q}", file=f)
 
             if token.is_group and (max_depth is None or depth < max_depth):
                 parent_pre = '   ' if last else '|  '
-                token._pprint_tree(max_depth, depth + 1, f, _pre + parent_pre)
+                child_pre = pre + parent_pre
+                child_count = len(token.tokens)
+                for idx in range(child_count - 1, -1, -1):
+                    stack.append((token.tokens[idx], idx,
+                                  idx == child_count - 1,
+                                  child_pre, depth + 1))
 
     def get_token_at_offset(self, offset):
         """Returns the token that is on position offset."""
@@ -215,11 +225,23 @@ class TokenList(Token):
     def flatten(self):
         """Generator yielding ungrouped tokens.
 
-        This method is recursively called for all child tokens.
+        Subgroups are resolved with an explicit stack instead of recursive
+        ``yield from`` calls, so trees deeper than the Python recursion
+        limit can still be flattened. Leaf tokens are yielded in document
+        order and lazily, one at a time.
         """
-        for token in self.tokens:
+        # Iterators on the stack (rather than list indexing) keep this
+        # working when ``tokens`` is any iterable, e.g. the generator a
+        # postprocess filter may assign to ``stmt.tokens``.
+        stack = [iter(self.tokens)]
+        while stack:
+            try:
+                token = next(stack[-1])
+            except StopIteration:
+                stack.pop()
+                continue
             if token.is_group:
-                yield from token.flatten()
+                stack.append(iter(token.tokens))
             else:
                 yield token
 

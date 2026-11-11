@@ -7,7 +7,6 @@
 
 from sqlparse import sql
 from sqlparse import tokens as T
-from sqlparse.utils import indent, offset
 
 
 class AlignedIndentFilter:
@@ -49,14 +48,21 @@ class AlignedIndentFilter:
     def _process_parenthesis(self, tlist):
         # if this isn't a subquery, don't re-indent
         _, token = tlist.token_next_by(m=(T.DML, 'SELECT'))
-        if token is not None:
-            with indent(self):
-                tlist.insert_after(tlist[0], self.nl('SELECT'))
-                # process the inside of the parenthesis
-                self._process_default(tlist)
-
-            # de-indent last parenthesis
-            tlist.insert_before(tlist[-1], self.nl())
+        if token is None:
+            # The recursion left non-subquery parenthesis and their children
+            # untouched; the explicit traversal mirrors that.
+            return False
+        outer_indent = self.indent
+        self.indent += 1
+        tlist.insert_after(tlist[0], self.nl('SELECT'))
+        # process the inside of the parenthesis
+        self._process_default(tlist)
+        # de-indent last parenthesis (this line uses the outer indent)
+        self.indent = outer_indent
+        tlist.insert_before(tlist[-1], self.nl())
+        # Children are still indented; the frame that entered this group
+        # restores the original indent after they have been handled.
+        self.indent = outer_indent + 1
 
     def _process_identifierlist(self, tlist):
         # columns being selected
@@ -118,22 +124,45 @@ class AlignedIndentFilter:
 
     def _process_default(self, tlist):
         self._split_kwds(tlist)
-        # process any sub-sub statements
-        for sgroup in tlist.get_sublists():
+        # Subgroups are visited by the explicit stack in ``process``; this
+        # method only handles *tlist* itself.
+
+    def _process(self, tlist):
+        func_name = f'_process_{type(tlist).__name__}'
+        func = getattr(self, func_name.lower(), self._process_default)
+        return func(tlist)
+
+    def process(self, stmt):
+        # The descent used to recurse one call frame per nesting level; it
+        # is now an explicit stack. Each frame is
+        # ``[group, state, children, next_index]`` where *state* is the
+        # indent/offset snapshot to restore when leaving the group and
+        # *children* is snapshotted once, right after the group's own
+        # handler ran. The indentation a handler leaves for its subtree
+        # therefore applies to all of its children, as the recursive
+        # ``with indent(...)`` scope did.
+        stack = [[stmt, (self.indent, self.offset), None, 0]]
+        while stack:
+            frame = stack[-1]
+            tlist, state, children, index = frame
+            if children is None:
+                descend = self._process(tlist)
+                frame[2] = (list(tlist.get_sublists())
+                            if descend is not False else [])
+                continue
+            if index >= len(children):
+                self.indent, self.offset = state
+                stack.pop()
+                continue
+            sgroup = children[index]
+            frame[3] = index + 1
             idx = tlist.token_index(sgroup)
             pidx, prev_ = tlist.token_prev(idx)
             # HACK: make "group/order by" work. Longer than max_len.
             offset_ = 3 if (
                 prev_ and prev_.match(T.Keyword, self.by_words, regex=True)
             ) else 0
-            with offset(self, offset_):
-                self._process(sgroup)
-
-    def _process(self, tlist):
-        func_name = f'_process_{type(tlist).__name__}'
-        func = getattr(self, func_name.lower(), self._process_default)
-        func(tlist)
-
-    def process(self, stmt):
-        self._process(stmt)
+            self.offset += offset_
+            stack.append([sgroup, (self.indent, self.offset - offset_),
+                          None, 0])
         return stmt

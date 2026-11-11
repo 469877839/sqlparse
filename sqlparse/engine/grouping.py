@@ -28,8 +28,14 @@ _DELIMITED_GROUPS = (sql.Parenthesis, sql.SquareBrackets, sql.Case,
                      sql.If, sql.For, sql.Begin)
 
 
-def _group_matching(tlist, cls, depth=0):
-    """Groups Tokens that have beginning and end."""
+def _check_grouping_limits(tlist, depth):
+    """Resource guards applied before a grouping pass touches a list.
+
+    The depth is the nesting level of *tlist* inside the statement, counted
+    from zero. Checking it before any work starts means overly deep input is
+    rejected with a clear, predictable error instead of relying on Python's
+    recursion limit -- the grouping passes themselves run on explicit stacks.
+    """
     if MAX_GROUPING_DEPTH is not None and depth > MAX_GROUPING_DEPTH:
         raise SQLParseError(
             f"Maximum grouping depth exceeded ({MAX_GROUPING_DEPTH})."
@@ -42,39 +48,69 @@ def _group_matching(tlist, cls, depth=0):
             f"Maximum number of tokens exceeded ({MAX_GROUPING_TOKENS})."
         )
 
-    opens = []
-    tidx_offset = 0
-    token_list = list(tlist)
 
-    for idx, token in enumerate(token_list):
-        tidx = idx - tidx_offset
+def _nested_group_lists(tlist):
+    """Return all nested TokenLists in pre-order, root first.
 
-        if token.is_whitespace:
-            # ~50% of tokens will be whitespace. Will checking early
-            # for them avoid 3 comparisons, but then add 1 more comparison
-            # for the other ~50% of tokens...
-            continue
+    Yields ``(token_list, level)`` pairs where *level* is the nesting depth
+    below *tlist* (zero for *tlist* itself). The walk only follows existing
+    groups; it never mutates the tree and uses an explicit stack, so it
+    works for trees deeper than the Python recursion limit.
+    """
+    result = []
+    stack = [(tlist, 0)]
+    while stack:
+        current, level = stack.pop()
+        result.append((current, level))
+        children = [token for token in current.tokens if token.is_group]
+        for child in reversed(children):
+            stack.append((child, level + 1))
+    return result
 
-        if token.is_group and not isinstance(token, cls):
-            # Check inside previously grouped (i.e. parenthesis) if group
-            # of different type is inside (i.e., case). though ideally  should
-            # should check for all open/close tokens at once to avoid recursion
-            _group_matching(token, cls, depth + 1)
-            continue
 
-        if token.match(*cls.M_OPEN):
-            opens.append(tidx)
+def _group_matching(tlist, cls, depth=0):
+    """Groups Tokens that have beginning and end."""
+    # The recursive descent used to call itself once per nesting level;
+    # the walk is now an explicit pre-order stack. The guards run up
+    # front (including on every nested list) so input beyond the limits
+    # is rejected before the grouping work starts.
+    nested = _nested_group_lists(tlist)
+    for current, level in nested:
+        _check_grouping_limits(current, depth + level)
 
-        elif token.match(*cls.M_CLOSE):
-            try:
-                open_idx = opens.pop()
-            except IndexError:
-                # this indicates invalid sql and unbalanced tokens.
-                # instead of break, continue in case other "valid" groups exist
+    for current, _level in nested:
+        tlist = current
+        opens = []
+        tidx_offset = 0
+        token_list = list(tlist)
+
+        for idx, token in enumerate(token_list):
+            tidx = idx - tidx_offset
+
+            if token.is_whitespace:
+                # ~50% of tokens will be whitespace. Will checking early
+                # for them avoid 3 comparisons, but then add 1 more comparison
+                # for the other ~50% of tokens...
                 continue
-            close_idx = tidx
-            tlist.group_tokens(cls, open_idx, close_idx)
-            tidx_offset += close_idx - open_idx
+
+            if token.is_group and not isinstance(token, cls):
+                # Nested groups were visited by the pre-order walk above,
+                # matching the previous recursive call for that token.
+                continue
+
+            if token.match(*cls.M_OPEN):
+                opens.append(tidx)
+
+            elif token.match(*cls.M_CLOSE):
+                try:
+                    open_idx = opens.pop()
+                except IndexError:
+                    # this indicates invalid sql and unbalanced tokens.
+                    # instead of break, continue in case other "valid" groups exist
+                    continue
+                close_idx = tidx
+                tlist.group_tokens(cls, open_idx, close_idx)
+                tidx_offset += close_idx - open_idx
 
 
 def group_brackets(tlist):
@@ -501,23 +537,25 @@ def _group(tlist, cls, match,
            depth=0
            ):
     """Groups together tokens that are joined by a middle token. i.e. x < y"""
-    if MAX_GROUPING_DEPTH is not None and depth > MAX_GROUPING_DEPTH:
-        raise SQLParseError(
-            f"Maximum grouping depth exceeded ({MAX_GROUPING_DEPTH})."
-        )
+    # The recursion used to descend depth-first into every eligible subgroup
+    # *before* continuing with the parent list. An explicit frame stack
+    # reproduces that order: each frame is
+    # [token_list, snapshot, position, index_offset, prev_index, prev_token,
+    #  depth]. A subgroup frame is pushed after the parent position has
+    # advanced, so the parent resumes at the following token when the child
+    # is exhausted.
+    _check_grouping_limits(tlist, depth)
+    stack = [[tlist, list(tlist), 0, 0, None, None, depth]]
 
-    # Limit the number of tokens to prevent DoS attacks
-    if MAX_GROUPING_TOKENS is not None \
-       and len(tlist.tokens) > MAX_GROUPING_TOKENS:
-        raise SQLParseError(
-            f"Maximum number of tokens exceeded ({MAX_GROUPING_TOKENS})."
-        )
+    while stack:
+        frame = stack[-1]
+        tlist, token_list, idx, tidx_offset, pidx, prev_, depth = frame
+        if idx >= len(token_list):
+            stack.pop()
+            continue
 
-    tidx_offset = 0
-    pidx, prev_ = None, None
-    token_list = list(tlist)
-
-    for idx, token in enumerate(token_list):
+        token = token_list[idx]
+        frame[2] = idx + 1
         tidx = idx - tidx_offset
         if tidx < 0:  # tidx shouldn't get negative
             continue
@@ -526,8 +564,8 @@ def _group(tlist, cls, match,
             continue
 
         if recurse and token.is_group and not isinstance(token, cls):
-            _group(token, cls, match, valid_prev, valid_next,
-                   post, extend, True, depth + 1)
+            _check_grouping_limits(token, depth + 1)
+            stack.append([token, list(token), 0, 0, None, None, depth + 1])
 
         if match(token):
             nidx, next_ = tlist.token_next(tidx)
@@ -537,8 +575,10 @@ def _group(tlist, cls, match,
                 from_idx, to_idx = post(tlist, pidx, tidx, nidx)
                 grp = tlist.group_tokens(cls, from_idx, to_idx, extend=extend)
 
-                tidx_offset += to_idx - from_idx
-                pidx, prev_ = from_idx, grp
+                frame[3] = tidx_offset + (to_idx - from_idx)
+                frame[4] = from_idx
+                frame[5] = grp
                 continue
 
-        pidx, prev_ = tidx, token
+        frame[4] = tidx
+        frame[5] = token

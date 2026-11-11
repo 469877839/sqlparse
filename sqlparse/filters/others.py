@@ -12,6 +12,24 @@ from sqlparse import tokens as T
 from sqlparse.utils import split_unquoted_newlines
 
 
+def _walk_sublists(stmt):
+    """Yield *stmt* and all nested TokenLists, children before parents.
+
+    The walk uses an explicit stack instead of recursion, so statements
+    with deeply nested groups don't consume Python's call stack.
+    """
+    stack = [(stmt, 0)]
+    while stack:
+        tlist, state = stack.pop()
+        if state == 0:
+            stack.append((tlist, 1))
+            sublists = list(tlist.get_sublists())
+            for sgroup in reversed(sublists):
+                stack.append((sgroup, 0))
+        else:
+            yield tlist
+
+
 class StripCommentsFilter:
 
     @staticmethod
@@ -76,8 +94,8 @@ class StripCommentsFilter:
             tidx, token = get_next_comment(idx=tidx)
 
     def process(self, stmt):
-        [self.process(sgroup) for sgroup in stmt.get_sublists()]
-        StripCommentsFilter._process(stmt)
+        for tlist in _walk_sublists(stmt):
+            StripCommentsFilter._process(tlist)
         return stmt
 
 
@@ -129,8 +147,8 @@ class StripWhitespaceFilter:
         self._stripws_default(tlist)
 
     def process(self, stmt, depth=0):
-        [self.process(sgroup, depth + 1) for sgroup in stmt.get_sublists()]
-        self._stripws(stmt)
+        for tlist in _walk_sublists(stmt):
+            self._stripws(tlist)
         if depth == 0 and stmt.tokens and stmt.tokens[-1].is_whitespace:
             stmt.tokens.pop(-1)
         return stmt
@@ -156,8 +174,8 @@ class SpacesAroundOperatorsFilter:
             tidx, token = tlist.token_next_by(t=ttypes, idx=tidx)
 
     def process(self, stmt):
-        [self.process(sgroup) for sgroup in stmt.get_sublists()]
-        SpacesAroundOperatorsFilter._process(stmt)
+        for tlist in _walk_sublists(stmt):
+            SpacesAroundOperatorsFilter._process(tlist)
         return stmt
 
 
