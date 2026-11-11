@@ -75,44 +75,114 @@ class DelimitedSpans:
 
 _NO_SPANS = DelimitedSpans({}, {})
 
+# A delimiter whose complete form has not arrived yet must not be typed
+# prematurely. These patterns match the longest still-possible prefix,
+# anchored at a buffer position; they only decide whether more input may
+# turn the prefix into a real opener, never what token it becomes.
+_ML_COMMENT_PREFIX = re.compile(r'/\*?\+?')
+_DOLLAR_PREFIX = re.compile(
+    r'\$(?:[_A-ZÀ-Ü]\w*)?\$?', re.IGNORECASE | re.UNICODE)
 
-def find_delimited_spans(text):
+
+def is_span_prefix(text, pos):
+    """Return True if ``text[pos:]`` starts a multiline comment or
+    dollar-quoted literal opener that is still missing its tail.
+
+    A complete opener (e.g. ``/*`` or ``$tag$``) is handled through
+    :class:`DelimitedSpans`; this only covers truncated prefixes such as
+    ``/``, ``/+`` is no opener, ``/*+`` is complete, or ``$ta``.
+    """
+    char = text[pos]
+    if char == '/':
+        m = _ML_COMMENT_PREFIX.match(text, pos)
+        # "/*" and "/*+" are complete openers handled elsewhere; only a
+        # lone "/" (which may still grow into either) is undecidable.
+        return m is not None and m.end() - pos < 2
+    if char == '$':
+        m = _DOLLAR_PREFIX.match(text, pos)
+        if m is None:
+            return False
+        candidate = m.group()
+        # A complete "$...$" opener is reported by find_delimited_spans();
+        # anything shorter ("$", "$tag") may still grow into one, unless
+        # it can never become a valid opener at all.
+        if candidate.endswith('$') and len(candidate) > 1:
+            return False
+        return _DOLLAR_QUOTE_OPENER_OK.match(text, pos) is not None
+    return False
+
+
+def find_delimited_spans(text, start=0, end=None, openers=None,
+                         closers=None):
     """Locate the delimiters of dollar-quoted literals and multiline
     comments in `text` and return them as a :class:`DelimitedSpans`.
+
+    Pass `start`/`end` to scan only ``text[start:end]`` while recording
+    absolute offsets. When `openers` and `closers` are given, the spans are
+    merged into them instead of starting from empty containers -- this is
+    how the incremental lexer extends its span index one chunk at a time.
+    In merge mode the whole buffered text is rescanned (the buffer only
+    ever holds the current, not-yet-delivered statement) so a delimiter
+    straddling a chunk boundary is never missed; duplicate positions are
+    discarded.
     """
-    has_dollar = '$' in text
+    if end is None:
+        end = len(text)
+    merge_mode = openers is not None
+    scan_start = 0 if merge_mode else start
+    region = text[scan_start:end]
+    has_dollar = '$' in region
     # A comment can only ever open on "/*"; without it "*/" alone can
     # never pair with anything, so gating on "/*" alone is sufficient to
-    # skip all three comment-related regex passes below.
-    has_comment_open = '/*' in text
+    # skip the comment passes for whole-text scans. In merge mode a closer
+    # may still complete a literal opened by an earlier chunk, so "*/"
+    # alone has to be collected there.
+    has_comment_open = '/*' in region
+    has_comment_close = '*/' in region
     if not has_dollar and not has_comment_open:
-        return _NO_SPANS
+        if openers is None:
+            return _NO_SPANS
+        if not has_comment_close:
+            return DelimitedSpans(openers, closers)
 
-    openers = {}
-    closers = defaultdict(lambda: ([], []))
+    if openers is None:
+        openers = {}
+        closers = defaultdict(lambda: ([], []))
     if has_dollar:
-        for m in _DOLLAR_QUOTE_DELIM.finditer(text):
-            start = m.start()
+        for m in _DOLLAR_QUOTE_DELIM.finditer(region):
+            start_pos = m.start() + scan_start
             tag = m.group(1)
-            end = start + len(tag)
+            end_pos = start_pos + len(tag)
             # Every delimiter can close a literal, but one preceded by a
             # word character, `"` or `$` cannot open one.
             starts, ends = closers[tag]
-            starts.append(start)
-            ends.append(end)
-            if _DOLLAR_QUOTE_OPENER_OK.match(text, start) is not None:
-                openers[start] = (end, tag, tokens.Literal)
+            if not starts or starts[-1] != start_pos:
+                starts.append(start_pos)
+                ends.append(end_pos)
+            if start_pos >= start and \
+                    _DOLLAR_QUOTE_OPENER_OK.match(text, start_pos) is not None:
+                openers[start_pos] = (end_pos, tag, tokens.Literal)
     if has_comment_open:
-        for m in _COMMENT_HINT_OPEN.finditer(text):
-            openers[m.start()] = (
-                m.end(), _COMMENT_TAG, tokens.Comment.Multiline.Hint)
-        for m in _COMMENT_OPEN.finditer(text):
-            openers[m.start()] = (
-                m.end(), _COMMENT_TAG, tokens.Comment.Multiline)
+        for m in _COMMENT_HINT_OPEN.finditer(region):
+            start_pos = m.start() + scan_start
+            if start_pos >= start:
+                openers[start_pos] = (
+                    m.end() + scan_start, _COMMENT_TAG,
+                    tokens.Comment.Multiline.Hint)
+        for m in _COMMENT_OPEN.finditer(region):
+            start_pos = m.start() + scan_start
+            if start_pos >= start:
+                openers[start_pos] = (
+                    m.end() + scan_start, _COMMENT_TAG,
+                    tokens.Comment.Multiline)
+    if has_comment_open or (merge_mode and has_comment_close):
         starts, ends = closers[_COMMENT_TAG]
-        for m in _COMMENT_CLOSE.finditer(text):
-            starts.append(m.start())
-            ends.append(m.end())
+        for m in _COMMENT_CLOSE.finditer(region):
+            start_pos = m.start() + scan_start
+            end_pos = m.end() + scan_start
+            if not starts or starts[-1] != start_pos:
+                starts.append(start_pos)
+                ends.append(end_pos)
     return DelimitedSpans(openers, closers)
 
 

@@ -1,3 +1,16 @@
+Unreleased
+----------
+
+Enhancements
+
+* Add `sqlparse.parseiter()` and `sqlparse.lexer.IncrementalLexer` for
+  parsing SQL text that arrives in chunks. Statements are delivered as
+  soon as they are complete without waiting for end of input; chunk
+  boundaries may fall inside escapes, line comments, multiline comments
+  or dollar-quoted literals, and the result is identical to parsing the
+  concatenated text. Only the current unfinished statement is buffered.
+
+
 Release 0.6.1 (Nov 01, 2026)
 ----------------------------
 

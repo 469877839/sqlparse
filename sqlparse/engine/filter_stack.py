@@ -7,6 +7,8 @@
 
 """filter"""
 
+from collections.abc import Iterable
+
 from sqlparse import lexer
 from sqlparse.engine import grouping
 from sqlparse.engine.statement_splitter import StatementSplitter
@@ -27,8 +29,28 @@ class FilterStack:
         self._grouping = True
 
     def run(self, sql, encoding=None):
+        stream = lexer.tokenize(sql, encoding)
+        yield from self._run_token_stream(stream)
+
+    def run_iter(self, chunks, encoding=None):
+        """Like :meth:`run`, but driven by an iterable of text chunks.
+
+        Each chunk is pulled from `chunks` only after the previously
+        buffered text has been consumed, so a completed statement is
+        delivered as soon as its terminator arrives rather than at end of
+        input. Only the currently unfinished statement is held in memory."""
+        if isinstance(chunks, (str, bytes)):
+            raise TypeError(
+                'chunks must be an iterable of text chunks, not a single '
+                f'{type(chunks).__name__}; use run() for whole-text input')
+        if not isinstance(chunks, Iterable):
+            raise TypeError(
+                f'chunks must be an iterable, got {type(chunks).__name__}')
+        stream = lexer.tokenize_iter(chunks, encoding)
+        yield from self._run_token_stream(stream)
+
+    def _run_token_stream(self, stream):
         try:
-            stream = lexer.tokenize(sql, encoding)
             # Process token stream
             for filter_ in self.preprocess:
                 stream = filter_.process(stream)

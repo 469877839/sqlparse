@@ -8,7 +8,7 @@
 """Parse SQL statements."""
 
 # Setup namespace
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from typing import IO, Any
 
 from sqlparse import cli, engine, filters, formatter, sql, tokens
@@ -41,6 +41,36 @@ def parsestream(
     stack = engine.FilterStack()
     stack.enable_grouping()
     return stack.run(stream, encoding)
+
+
+def parseiter(
+    chunks: Iterable[str | bytes], encoding: str | None = None
+) -> Generator[sql.Statement, None, None]:
+    """Parse SQL text that arrives piece by piece.
+
+    `chunks` is an iterable yielding the script as text (or bytes) chunks
+    in arrival order -- for example blocks read from an object store.
+    Chunks are pulled lazily: as soon as a statement is complete (its
+    terminating semicolon, ``GO`` or end of input), the corresponding
+    :class:`~sqlparse.sql.Statement` is yielded, without waiting for the
+    whole script. Chunk boundaries may fall inside escapes, two-character
+    line comments, multiline comments or dollar-quoted literals; such
+    fragments are buffered until they can be tokenized, so the result is
+    identical to :meth:`parse` on the concatenated text. Only the current,
+    not-yet-delivered statement is kept in memory.
+
+    An empty chunks iterable yields nothing. Exhausting the iterable acts
+    as end of input and flushes the final statement. Closing the returned
+    generator early stops pulling further chunks and releases all buffered
+    text.
+
+    :param chunks: An iterable of ``str`` or ``bytes`` chunks.
+    :param encoding: Encoding used to decode bytes chunks (optional).
+    :returns: A generator of :class:`~sqlparse.sql.Statement` instances.
+    """
+    stack = engine.FilterStack()
+    stack.enable_grouping()
+    return stack.run_iter(chunks, encoding)
 
 
 def format(sql: str, encoding: str | None = None, **options: Any) -> str:
