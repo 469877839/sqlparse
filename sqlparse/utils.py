@@ -25,9 +25,18 @@ def split_unquoted_newlines(stmt):
     Unlike str.splitlines(), this will ignore CR/LF/CR+LF if the requisite
     character is inside of a string. A quote that is never closed is
     treated as plain text."""
-    text = str(stmt)
+    return [line for line, _break in iter_unquoted_lines(str(stmt))]
+
+
+def iter_unquoted_lines(text):
+    """Yield ``(line, break)`` pairs split on unquoted newlines.
+
+    ``line`` excludes the line break; ``break`` is the original break
+    sequence (``'\\r\\n'``, ``'\\r'`` or ``'\\n'``) or ``''`` for the final
+    line.  Newlines inside quoted strings are ignored, see
+    :func:`split_unquoted_newlines`.
+    """
     length = len(text)
-    lines = []
     line_start = pos = 0
     # Searching the end of a string that is never closed scans up to some
     # position. Every later quote of the same kind before that position
@@ -38,8 +47,12 @@ def split_unquoted_newlines(stmt):
     while pos < length:
         char = text[pos]
         if char in '\r\n':
-            lines.append(text[line_start:pos])
-            pos += 2 if text.startswith('\r\n', pos) else 1
+            if text.startswith('\r\n', pos):
+                yield text[line_start:pos], '\r\n'
+                pos += 2
+            else:
+                yield text[line_start:pos], char
+                pos += 1
             line_start = pos
         elif char in unclosed_before:
             if pos >= unclosed_before[char]:
@@ -51,8 +64,7 @@ def split_unquoted_newlines(stmt):
             pos += 1
         else:
             pos = _UNQUOTED_TEXT.match(text, pos).end()
-    lines.append(text[line_start:])
-    return lines
+    yield text[line_start:], ''
 
 
 def remove_quotes(val):
@@ -73,6 +85,9 @@ def recurse(*cls):
     def wrap(f):
         def wrapped_f(tlist):
             for sgroup in tlist.get_sublists():
+                # fmt: off / fmt: on regions keep their own structure
+                if sgroup.is_fully_protected():
+                    continue
                 if not isinstance(sgroup, cls):
                     wrapped_f(sgroup)
             f(tlist)

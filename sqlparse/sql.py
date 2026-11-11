@@ -54,6 +54,7 @@ class Token:
         'is_whitespace',
         'normalized',
         'parent',
+        'protected',
         'ttype',
         'value',
     )
@@ -63,6 +64,7 @@ class Token:
         self.value = value
         self.ttype = ttype
         self.parent = None
+        self.protected = False
         self.is_group = False
         self.is_keyword = ttype in T.Keyword
         self.is_whitespace = self.ttype in T.Whitespace
@@ -71,6 +73,14 @@ class Token:
 
     def __str__(self):
         return self.value
+
+    def is_protected(self):
+        """Return True if this token is protected (fmt: off region)."""
+        return self.protected
+
+    def is_fully_protected(self):
+        """Return True if the whole token belongs to a protected region."""
+        return self.protected
 
     # Pending tokenlist __len__ bug fix
     # def __len__(self):
@@ -162,13 +172,16 @@ class TokenList(Token):
     list of child-tokens.
     """
 
-    __slots__ = 'tokens'
+    __slots__ = ('tokens', '_protected_state')
 
     def __init__(self, tokens=None):
         self.tokens = tokens or []
         [setattr(token, 'parent', self) for token in self.tokens]
         super().__init__(None, ''.join(token.value for token in self.tokens))
         self.is_group = True
+        # (has protected leaf, every leaf protected).  The common case is
+        # no fmt: region at all; aggregation only runs when one was found.
+        self._protected_state = (False, False)
 
     def __str__(self):
         return ''.join(token.value for token in self.flatten())
@@ -227,6 +240,32 @@ class TokenList(Token):
         for token in self.tokens:
             if token.is_group:
                 yield token
+
+    def is_protected(self):
+        """Return True if any leaf token is protected (fmt: off region)."""
+        return self._protected_state[0]
+
+    def is_fully_protected(self):
+        """Return True if every leaf token belongs to a protected region."""
+        return self._protected_state[1]
+
+    def update_protected_state(self):
+        """Aggregate leaf ``protected`` flags for all nested groups.
+
+        Runs once after grouping, so filter checks are O(1) instead of
+        walking the whole tree at every recursion level.
+        """
+        has_protected = False
+        has_unprotected = False
+        for token in self.tokens:
+            if token.is_group:
+                token.update_protected_state()
+                any_p, all_p = token._protected_state
+            else:
+                any_p = all_p = token.protected
+            has_protected = has_protected or any_p
+            has_unprotected = has_unprotected or not all_p
+        self._protected_state = (has_protected, not has_unprotected)
 
     @property
     def _groupable_tokens(self):
@@ -552,6 +591,14 @@ class Comment(TokenList):
 
     def is_multiline(self):
         return self.tokens and self.tokens[0].ttype == T.Comment.Multiline
+
+
+class Protected(TokenList):
+    """Text kept verbatim between ``fmt: off`` and ``fmt: on`` markers.
+
+    Grouping stops at the region boundary so external systems can rely on
+    the original text of the contained tokens.
+    """
 
 
 class Where(TokenList):

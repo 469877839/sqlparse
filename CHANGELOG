@@ -1,3 +1,19 @@
+Development
+-----------
+
+New Features
+
+* `format()` now keeps protected regions verbatim.  A standalone line
+  comment containing `fmt: off` opens a region and a standalone line
+  comment containing `fmt: on` closes it; everything between the markers,
+  the markers included, is emitted unchanged (whitespace and line endings
+  such as CRLF included) while the rest of the document keeps following the
+  formatting options.  Markers inside string literals or block comments and
+  markers sharing a line with SQL have no effect.  Nested `fmt: off`
+  markers are balanced by `fmt: on`; an unclosed region runs to the end of
+  the input.  The behavior can be disabled with the new
+  `keep_fmt_regions=False` option.
+
 Release 0.6.1 (Nov 01, 2026)
 ----------------------------
 

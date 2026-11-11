@@ -131,6 +131,11 @@ def validate_options(options):
             raise SQLParseError('right_margin requires an integer > 10')
     options['right_margin'] = right_margin
 
+    keep_fmt_regions = options.get('keep_fmt_regions', True)
+    if keep_fmt_regions not in [True, False]:
+        raise SQLParseError('keep_fmt_regions requires a boolean value')
+    options['keep_fmt_regions'] = keep_fmt_regions
+
     return options
 
 

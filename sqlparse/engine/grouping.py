@@ -443,8 +443,34 @@ def group_values(tlist):
         tlist.group_tokens(sql.Values, start_idx, end_idx, extend=True)
 
 
+def group_protected(tlist):
+    """Wrap runs of protected tokens into :class:`~sqlparse.sql.Protected`.
+
+    Runs first so that no other grouping pass pulls region tokens into
+    identifiers, comparisons or comments that reach across the boundary.
+    """
+    idx = 0
+    while idx < len(tlist.tokens):
+        token = tlist.tokens[idx]
+        if token.is_group:
+            group_protected(token)
+            idx += 1
+            continue
+        if not token.protected:
+            idx += 1
+            continue
+        end = idx
+        while (end + 1 < len(tlist.tokens)
+               and not tlist.tokens[end + 1].is_group
+               and tlist.tokens[end + 1].protected):
+            end += 1
+        tlist.group_tokens(sql.Protected, idx, end)
+        idx += 1
+
+
 def group(stmt):
     for func in [
+        group_protected,
         group_comments,
 
         # _group_matching

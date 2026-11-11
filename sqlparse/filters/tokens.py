@@ -8,6 +8,17 @@
 from sqlparse import tokens as T
 
 
+def _unpack(item):
+    """Split a stream item into ``(ttype, value, protected)``.
+
+    Regular streams yield ``(ttype, value)`` pairs; a
+    :class:`~sqlparse.protected.ProtectedStreamFilter` yields triples.
+    """
+    ttype, value = item[0], item[1]
+    is_protected = len(item) > 2 and item[2]
+    return ttype, value, is_protected
+
+
 class _CaseFilter:
     ttype = None
 
@@ -16,10 +27,11 @@ class _CaseFilter:
         self.convert = getattr(str, case)
 
     def process(self, stream):
-        for ttype, value in stream:
-            if ttype in self.ttype:
+        for item in stream:
+            ttype, value, is_protected = _unpack(item)
+            if not is_protected and ttype in self.ttype:
                 value = self.convert(value)
-            yield ttype, value
+            yield ttype, value, is_protected
 
 
 class KeywordCaseFilter(_CaseFilter):
@@ -30,10 +42,12 @@ class IdentifierCaseFilter(_CaseFilter):
     ttype = T.Name, T.String.Symbol
 
     def process(self, stream):
-        for ttype, value in stream:
-            if ttype in self.ttype and value.strip()[0] != '"':
+        for item in stream:
+            ttype, value, is_protected = _unpack(item)
+            if (not is_protected and ttype in self.ttype
+                    and value.strip()[0] != '"'):
                 value = self.convert(value)
-            yield ttype, value
+            yield ttype, value, is_protected
 
 
 class TruncateStringFilter:
@@ -42,9 +56,10 @@ class TruncateStringFilter:
         self.char = char
 
     def process(self, stream):
-        for ttype, value in stream:
-            if ttype != T.Literal.String.Single:
-                yield ttype, value
+        for item in stream:
+            ttype, value, is_protected = _unpack(item)
+            if ttype != T.Literal.String.Single or is_protected:
+                yield ttype, value, is_protected
                 continue
 
             if value[:2] == "''":
@@ -56,4 +71,4 @@ class TruncateStringFilter:
 
             if len(inner) > self.width:
                 value = ''.join((quote, inner[:self.width], self.char, quote))
-            yield ttype, value
+            yield ttype, value, is_protected

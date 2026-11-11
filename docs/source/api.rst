@@ -84,6 +84,47 @@ The :meth:`~sqlparse.format` function accepts the following keyword arguments.
 ``comma_first``
   If ``True`` comma-first notation for column names is used.
 
+``keep_fmt_regions`` (default: ``True``)
+  If ``True``, standalone line comments containing ``fmt: off`` and
+  ``fmt: on`` delimit protected regions whose text is emitted verbatim,
+  including original whitespace and line endings. Everything outside the
+  regions is formatted normally. See :ref:`formatting-regions` for the
+  detailed semantics. Pass ``False`` to ignore these markers.
+
+
+.. _formatting-regions:
+
+Protected Formatting Regions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some SQL fragments are consumed by external systems that require their
+text to stay byte-for-byte unchanged.  A line comment occupying a line on
+its own can therefore open and close a protected region::
+
+  select a, b from t
+  -- fmt: off
+  where   x   =   1
+  -- fmt: on
+    and z = 2
+
+The text from the ``-- fmt: off`` comment through the ``-- fmt: on``
+comment is kept as written (including multiple spaces, tabs and original
+line endings such as CRLF); the surrounding SQL is still formatted with
+the given options.
+
+* Only standalone line comments (``-- ...`` or ``# ...``) are treated as
+  markers.  The same words inside a string literal or a block comment have
+  no effect, and a marker sharing its line with SQL is ignored.
+* ``fmt: off`` while a region is already open nests; the region closes
+  only when the nesting is balanced by matching ``fmt: on`` comments.
+* An ``fmt: on`` without a pending opener is an ordinary comment.
+* An ``fmt: off`` without a matching ``fmt: on`` extends the region to the
+  end of the input instead of raising an error.
+* Regions may span several statements; statement boundaries and
+  parentheses stay intact across a region.
+* Repeated formatting of the result is stable, and the markers themselves
+  are preserved.
+
 
 Security and Performance Considerations
 ---------------------------------------

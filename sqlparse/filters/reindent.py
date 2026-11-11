@@ -110,10 +110,15 @@ class ReindentFilter:
     def _split_kwds(self, tlist):
         tidx, token = self._next_token(tlist)
         while token:
+            if token.is_protected():
+                # Protected regions keep their own line breaks and spacing.
+                tidx, token = self._next_token(tlist, tidx)
+                continue
             pidx, prev_ = tlist.token_prev(tidx, skip_ws=False)
             uprev = str(prev_)
 
-            if prev_ and prev_.is_whitespace:
+            if (prev_ and prev_.is_whitespace
+                    and not prev_.is_protected()):
                 del tlist.tokens[pidx]
                 tidx -= 1
 
@@ -127,8 +132,12 @@ class ReindentFilter:
         ttypes = T.Keyword.DML, T.Keyword.DDL
         tidx, token = tlist.token_next_by(t=ttypes)
         while token:
+            if token.is_protected():
+                tidx, token = tlist.token_next_by(t=ttypes, idx=tidx)
+                continue
             pidx, prev_ = tlist.token_prev(tidx, skip_ws=False)
-            if prev_ and prev_.is_whitespace:
+            if (prev_ and prev_.is_whitespace
+                    and not prev_.is_protected()):
                 del tlist.tokens[pidx]
                 tidx -= 1
             # only break if it's not the first token
@@ -138,6 +147,8 @@ class ReindentFilter:
             tidx, token = tlist.token_next_by(t=ttypes, idx=tidx)
 
     def _process(self, tlist):
+        if tlist.is_fully_protected():
+            return
         func_name = f'_process_{type(tlist).__name__}'
         func = getattr(self, func_name.lower(), self._process_default)
         func(tlist)
@@ -146,12 +157,16 @@ class ReindentFilter:
         tidx, token = tlist.token_next_by(m=(T.Keyword, 'WHERE'))
         if not token:
             return
+        if token.is_protected():
+            return
         # issue121, errors in statement fixed??
         tlist.insert_before(tidx, self.nl())
         with indent(self):
             self._process_default(tlist)
 
     def _process_parenthesis(self, tlist):
+        if tlist.is_fully_protected():
+            return
         ttypes = T.Keyword.DML, T.Keyword.DDL
         _, is_dml_dll = tlist.token_next_by(t=ttypes)
         fidx, first = tlist.token_next_by(m=sql.Parenthesis.M_OPEN)
@@ -168,6 +183,8 @@ class ReindentFilter:
         self._process_default(tlist)
 
     def _process_identifierlist(self, tlist):
+        if tlist.is_fully_protected():
+            return
         identifiers = list(tlist.get_identifiers())
         if self.indent_columns:
             first = next(identifiers[0].flatten())
@@ -274,15 +291,45 @@ class ReindentFilter:
         self._split_statements(tlist) if stmts else None
         self._split_kwds(tlist)
         for sgroup in tlist.get_sublists():
-            self._process(sgroup)
+            # Groups fully inside a protected region keep their layout.
+            if not sgroup.is_fully_protected():
+                self._process(sgroup)
+
+    def _break_before_protected(self, tlist):
+        """Keep protected regions on their own line.
+
+        StripWhitespaceFilter turns the line break preceding a region into a
+        single space; the region itself must not be touched to restore it.
+        Insert the break in front of the group instead, so the boundary
+        stays stable across repeated formatting.
+        """
+        for sgroup in list(tlist.get_sublists()):
+            if isinstance(sgroup, sql.Protected):
+                idx = tlist.token_index(sgroup)
+                pidx, prev_ = tlist.token_prev(idx, skip_ws=False)
+                if prev_ is not None and not str(prev_).endswith(
+                        ('\n', '\r')):
+                    if prev_.is_whitespace:
+                        prev_.value = self.nl().value
+                    else:
+                        tlist.insert_before(idx, self.nl())
+            else:
+                self._break_before_protected(sgroup)
 
     def process(self, stmt):
         self._curr_stmt = stmt
         self._process(stmt)
+        self._break_before_protected(stmt)
 
         if self._last_stmt is not None:
-            nl = '\n' if str(self._last_stmt).endswith('\n') else '\n\n'
-            stmt.tokens.insert(0, sql.Token(T.Whitespace, nl))
+            # A protected region may begin the statement and already bring
+            # its own line break; adding the separator there would change its
+            # text and break idempotency.
+            first = next(stmt.flatten(), None)
+            if not (first is not None and first.protected
+                    and first.value[:1] in ('\n', '\r')):
+                nl = '\n' if str(self._last_stmt).endswith('\n') else '\n\n'
+                stmt.tokens.insert(0, sql.Token(T.Whitespace, nl))
 
         self._last_stmt = stmt
         return stmt

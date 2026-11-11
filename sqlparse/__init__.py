@@ -11,10 +11,18 @@
 from collections.abc import Generator
 from typing import IO, Any
 
-from sqlparse import cli, engine, filters, formatter, sql, tokens
+from sqlparse import cli, engine, filters, formatter, protected, sql, tokens
 
 __version__ = "0.6.1"
-__all__ = ["cli", "engine", "filters", "formatter", "sql", "tokens"]
+__all__ = [
+    "cli",
+    "engine",
+    "filters",
+    "formatter",
+    "protected",
+    "sql",
+    "tokens",
+]
 
 
 def parse(
@@ -51,10 +59,15 @@ def format(sql: str, encoding: str | None = None, **options: Any) -> str:
     In addition to the formatting options this function accepts the
     keyword "encoding" which determines the encoding of the statement.
 
+    Standalone line comments containing ``fmt: off`` / ``fmt: on`` mark
+    regions that are kept verbatim (see :mod:`sqlparse.protected`).  Pass
+    ``keep_fmt_regions=False`` to ignore these markers.
+
     :returns: The formatted SQL statement as string.
     """
-    stack = engine.FilterStack()
     options = formatter.validate_options(options)
+    stack = engine.FilterStack(
+        keep_fmt_regions=options.get('keep_fmt_regions', True))
     stack = formatter.build_filter_stack(stack, options)
     stack.postprocess.append(filters.SerializerUnicode())
     return "".join(stack.run(sql, encoding))

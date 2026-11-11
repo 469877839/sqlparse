@@ -153,7 +153,9 @@ class StatementSplitter:
         EOS_TTYPE = T.Whitespace, T.Comment.Single
 
         # Run over all stream tokens
-        for ttype, value in stream:
+        for item in stream:
+            ttype, value = item[0], item[1]
+            is_protected = len(item) > 2 and item[2]
             # Yield token if we finished a statement and there's no whitespaces
             # It will count newline token as a non whitespace. In this context
             # whitespace ignores newlines.
@@ -168,7 +170,9 @@ class StatementSplitter:
             self.level += self._change_splitlevel(ttype, value)
 
             # Append the token to the current statement
-            self.tokens.append(sql.Token(ttype, value))
+            token = sql.Token(ttype, value)
+            token.protected = is_protected
+            self.tokens.append(token)
 
             # Check if we get the end of a statement
             # Issue762: Allow GO (or "GO 2") as statement splitter.

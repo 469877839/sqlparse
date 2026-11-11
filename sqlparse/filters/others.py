@@ -9,7 +9,7 @@ import re
 
 from sqlparse import sql
 from sqlparse import tokens as T
-from sqlparse.utils import split_unquoted_newlines
+from sqlparse.utils import iter_unquoted_lines
 
 
 class StripCommentsFilter:
@@ -18,7 +18,13 @@ class StripCommentsFilter:
     def _process(tlist):
         def get_next_comment(idx=-1):
             # TODO(andi) Comment types should be unified, see related issue38
-            return tlist.token_next_by(i=sql.Comment, t=T.Comment, idx=idx)
+            tidx, token = tlist.token_next_by(i=sql.Comment, t=T.Comment,
+                                              idx=idx)
+            # Comments inside a fmt: off / fmt: on region must survive.
+            while token is not None and token.is_protected():
+                tidx, token = tlist.token_next_by(i=sql.Comment, t=T.Comment,
+                                                  idx=tidx)
+            return tidx, token
 
         def _get_insert_token(token):
             """Returns either a whitespace or the line breaks from token."""
@@ -91,9 +97,17 @@ class StripWhitespaceFilter:
     def _stripws_default(tlist):
         last_was_ws = False
         is_first_char = True
-        for token in tlist.tokens:
-            if token.is_whitespace:
-                token.value = '' if last_was_ws or is_first_char else ' '
+        for idx, token in enumerate(tlist.tokens):
+            if token.is_whitespace and not token.is_protected():
+                # Keep the line break that separates a protected region from
+                # the surrounding text so the marker stays on its own line.
+                next_token = tlist.tokens[idx + 1] if idx + 1 < len(
+                    tlist.tokens) else None
+                opens_region = (
+                    '\n' in token.value or '\r' in token.value
+                ) and next_token is not None and next_token.is_fully_protected()
+                if not opens_region:
+                    token.value = '' if last_was_ws or is_first_char else ' '
             last_was_ws = token.is_whitespace
             is_first_char = False
 
@@ -101,7 +115,9 @@ class StripWhitespaceFilter:
         # Removes newlines before commas, see issue140
         last_nl = None
         for token in list(tlist.tokens):
-            if last_nl and token.ttype is T.Punctuation and token.value == ',':
+            if (last_nl and not last_nl.is_protected()
+                    and token.ttype is T.Punctuation
+                    and token.value == ','):
                 tlist.tokens.remove(last_nl)
             last_nl = token if token.is_whitespace else None
 
@@ -118,20 +134,24 @@ class StripWhitespaceFilter:
                 and tlist.tokens[0].match(T.Punctuation, '(')
                 and tlist.tokens[-1].match(T.Punctuation, ')')):
             return self._stripws_default(tlist)
-        while tlist.tokens[1].is_whitespace:
+        while (tlist.tokens[1].is_whitespace
+               and not tlist.tokens[1].is_protected()):
             tlist.tokens.pop(1)
-        while tlist.tokens[-2].is_whitespace:
+        while (tlist.tokens[-2].is_whitespace
+               and not tlist.tokens[-2].is_protected()):
             tlist.tokens.pop(-2)
         if tlist.tokens[-2].is_group:
             # save to remove the last whitespace
-            while tlist.tokens[-2].tokens[-1].is_whitespace:
+            while (tlist.tokens[-2].tokens[-1].is_whitespace
+                   and not tlist.tokens[-2].tokens[-1].is_protected()):
                 tlist.tokens[-2].tokens.pop(-1)
         self._stripws_default(tlist)
 
     def process(self, stmt, depth=0):
         [self.process(sgroup, depth + 1) for sgroup in stmt.get_sublists()]
         self._stripws(stmt)
-        if depth == 0 and stmt.tokens and stmt.tokens[-1].is_whitespace:
+        if (depth == 0 and stmt.tokens and stmt.tokens[-1].is_whitespace
+                and not stmt.tokens[-1].is_protected()):
             stmt.tokens.pop(-1)
         return stmt
 
@@ -143,6 +163,9 @@ class SpacesAroundOperatorsFilter:
         ttypes = (T.Operator, T.Comparison)
         tidx, token = tlist.token_next_by(t=ttypes)
         while token:
+            if token.is_protected():
+                tidx, token = tlist.token_next_by(t=ttypes, idx=tidx)
+                continue
             nidx, next_ = tlist.token_next(tidx, skip_ws=False)
             if next_ and next_.ttype != T.Whitespace:
                 tlist.insert_after(tidx, sql.Token(T.Whitespace, ' '))
@@ -176,5 +199,39 @@ class StripTrailingSemicolonFilter:
 class SerializerUnicode:
     @staticmethod
     def process(stmt):
-        lines = split_unquoted_newlines(stmt)
-        return '\n'.join(line.rstrip() for line in lines)
+        text = str(stmt)
+        protected = SerializerUnicode._protected_mask(stmt, text)
+        if not any(protected):
+            # Work on the text already extracted: ``stmt.tokens`` may be a
+            # one-shot generator (output format filters replace it), so it
+            # must not be serialized a second time.
+            return '\n'.join(
+                line.rstrip() for line, _break in iter_unquoted_lines(text))
+
+        # Protected text keeps its original line breaks (CRLF, CR or LF)
+        # and trailing whitespace; unprotected line breaks are normalized
+        # to LF and unprotected trailing whitespace is rstripped as before.
+        out = []
+        pos = 0
+        for line, break_text in iter_unquoted_lines(text):
+            if line and protected[pos]:
+                out.append(line)
+            else:
+                out.append(line.rstrip())
+            pos += len(line)
+            if break_text:
+                out.append(break_text if protected[pos] else '\n')
+                pos += len(break_text)
+        return ''.join(out)
+
+    @staticmethod
+    def _protected_mask(stmt, text):
+        """Return a bytearray marking protected character positions."""
+        mask = bytearray(len(text))
+        offset = 0
+        for token in stmt.flatten():
+            end = offset + len(token.value)
+            if token.protected:
+                mask[offset:end] = b'\x01' * (end - offset)
+            offset = end
+        return mask

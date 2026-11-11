@@ -40,16 +40,18 @@ class AlignedIndentFilter:
 
     def _process_statement(self, tlist):
         if len(tlist.tokens) > 0 and tlist.tokens[0].is_whitespace \
-                and self.indent == 0:
+                and self.indent == 0 and not tlist.tokens[0].is_protected():
             tlist.tokens.pop(0)
 
         # process the main query body
         self._process(sql.TokenList(tlist.tokens))
 
     def _process_parenthesis(self, tlist):
+        if tlist.is_fully_protected():
+            return
         # if this isn't a subquery, don't re-indent
         _, token = tlist.token_next_by(m=(T.DML, 'SELECT'))
-        if token is not None:
+        if token is not None and not token.is_protected():
             with indent(self):
                 tlist.insert_after(tlist[0], self.nl('SELECT'))
                 # process the inside of the parenthesis
@@ -103,6 +105,9 @@ class AlignedIndentFilter:
     def _split_kwds(self, tlist):
         tidx, token = self._next_token(tlist)
         while token:
+            if token.is_protected():
+                tidx, token = self._next_token(tlist, tidx)
+                continue
             # joins, group/order by are special case. only consider the first
             # word as aligner
             if (
@@ -120,6 +125,8 @@ class AlignedIndentFilter:
         self._split_kwds(tlist)
         # process any sub-sub statements
         for sgroup in tlist.get_sublists():
+            if sgroup.is_fully_protected():
+                continue
             idx = tlist.token_index(sgroup)
             pidx, prev_ = tlist.token_prev(idx)
             # HACK: make "group/order by" work. Longer than max_len.
@@ -130,6 +137,8 @@ class AlignedIndentFilter:
                 self._process(sgroup)
 
     def _process(self, tlist):
+        if tlist.is_fully_protected():
+            return
         func_name = f'_process_{type(tlist).__name__}'
         func = getattr(self, func_name.lower(), self._process_default)
         func(tlist)
